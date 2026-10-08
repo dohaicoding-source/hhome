@@ -8,6 +8,13 @@
       "when": 1791313136135,
       "tag": "0000_wakeful_tattoo",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1791454800000,
+      "tag": "0001_multi_tenant_contracts",
+      "breakpoints": true
     }
   ]
 }

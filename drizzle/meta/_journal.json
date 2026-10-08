@@ -29,6 +29,13 @@
       "when": 1789638424220,
       "tag": "0003_tenant_images",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1791454800000,
+      "tag": "0004_multi_tenant_contracts",
+      "breakpoints": true
     }
   ]
 }

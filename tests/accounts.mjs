@@ -1,5 +1,6 @@
 import fs from 'node:fs';import ts from 'typescript';import {DatabaseSync} from 'node:sqlite';import assert from 'node:assert/strict';
-const sql=new DatabaseSync(':memory:');sql.exec('PRAGMA foreign_keys=ON;');for(const file of ['0000_rental.sql','0001_accounts_roles.sql','0002_contract_images.sql','0003_tenant_images.sql'])sql.exec(fs.readFileSync('drizzle/'+file,'utf8'));
+const sql=new DatabaseSync(':memory:');sql.exec('PRAGMA foreign_keys=ON;');for(const file of ['0000_rental.sql','0001_accounts_roles.sql','0002_contract_images.sql','0003_tenant_images.sql','0004_multi_tenant_contracts.sql'])sql.exec(fs.readFileSync('drizzle/'+file,'utf8'));
+const legacySql=new DatabaseSync(':memory:');for(const file of ['0000_rental.sql','0001_accounts_roles.sql','0002_contract_images.sql','0003_tenant_images.sql'])legacySql.exec(fs.readFileSync('drizzle/'+file,'utf8'));legacySql.prepare('INSERT INTO records (id,owner,kind,data,slot,version,created_at) VALUES (?,?,?,?,?,1,?)').run('legacy-contract','legacy-owner','contracts',JSON.stringify({roomId:'legacy-room',tenantId:'legacy-tenant'}),'legacy-room','2026-10-01T00:00:00.000Z');legacySql.exec(fs.readFileSync('drizzle/0004_multi_tenant_contracts.sql','utf8'));assert.equal(legacySql.prepare('SELECT slot FROM records WHERE id=?').get('legacy-contract').slot,'legacy-room:legacy-tenant');legacySql.close();
 function prepare(query){return {bind(...values){return {async all(){return {results:sql.prepare(query).all(...values)}},async first(){return sql.prepare(query).get(...values)||null},async run(){return {meta:sql.prepare(query).run(...values)}}}}}}
 globalThis.accountTestDB={prepare,async batch(statements){sql.exec('BEGIN');try{const r=[];for(const s of statements)r.push(await s.run());sql.exec('COMMIT');return r;}catch(e){sql.exec('ROLLBACK');throw e;}}};
 const blobs=new Map();globalThis.imageTestStorage={async put(key,data){blobs.set(key,new Uint8Array(data));},async get(key){return blobs.has(key)?{body:blobs.get(key)}:null;},async delete(key){for(const k of Array.isArray(key)?key:[key])blobs.delete(k);}};
@@ -12,13 +13,15 @@ async function request(path,body,{cookie='',workspace='',origin='https://rental.
 async function register(phone,owner=true){const r=await request('auth',{action:'register',phone,password:'StrongPass!123',name:'Test '+phone,workspaceName:owner?'Space '+phone:undefined});ok(r.status===200,'registration succeeds: '+JSON.stringify(r.data));const s=await request('session',null,{cookie:r.cookie});return {cookie:r.cookie,workspace:s.data.memberships[0]?.workspace_id,user:s.data.user,recovery:r.data.recoveryCode};}
 const a=await register('0900000001'),b=await register('0900000002'),staff=await register('0900000003',false),tenant=await register('0900000004',false);
 ok(a.workspace!==b.workspace,'owners have separate spaces');ok((await request('records',null)).status===401,'anonymous blocked');ok((await request('records',null,{...b,workspace:a.workspace})).status===403,'other owner blocked');
-async function create(kind,data,ctx=a){const r=await request('records',{kind,data},ctx);ok(r.status===200,'create '+kind+': '+JSON.stringify(r.data));return (await request('records',null,ctx)).data.records.filter(r=>r.kind===kind).at(-1);}
+async function create(kind,data,ctx=a){const r=await request('records',{kind,data},ctx);ok(r.status===200,'create '+kind+': '+JSON.stringify(r.data));return (await request('records',null,ctx)).data.records.find(row=>row.id===r.data.id);}
 const house=await create('buildings',{name:'House A',address:'A',type:'Chung cư mini',note:'private'}),house2=await create('buildings',{name:'House B',address:'B',type:'Nhà trọ',note:''});
 const room=await create('rooms',{name:'101',buildingId:house.id,floor:1,area:25,rent:4000000,status:'Sẵn sàng',note:'private'}),room2=await create('rooms',{name:'201',buildingId:house2.id,floor:2,area:30,rent:5000000,status:'Sẵn sàng',note:''});
 const person=await create('tenants',{name:'Tenant A',phone:'0900000004',email:'',buildingId:house.id,note:'internal only'}),other=await create('tenants',{name:'Tenant B',phone:'0900000005',email:'',buildingId:house2.id,note:''});
-const contract=await create('contracts',{roomId:room.id,tenantId:person.id,start:'2026-09-01',end:'2027-09-01',rent:4000000,deposit:4000000,active:true,note:'internal'});
+const contract=await create('contracts',{roomId:room.id,tenantId:person.id,start:'2026-09-01',end:'2027-09-01',rent:2000000,deposit:2000000,active:true,note:'internal'});
+const coTenant=await create('tenants',{name:'Tenant C',phone:'0900000006',email:'',buildingId:house.id,note:''});const sharedContract=await create('contracts',{roomId:room.id,tenantId:coTenant.id,start:'2026-09-01',end:'2027-09-01',rent:2000000,deposit:2000000,active:true,note:''});ok((await request('records',{kind:'contracts',data:{roomId:room.id,tenantId:person.id,start:'2026-10-01',end:'2027-09-01',rent:2000000,deposit:2000000,active:true,note:''}},a)).status===409,'same tenant cannot have duplicate active contract for one room');
 const c2=await create('contracts',{roomId:room2.id,tenantId:other.id,start:'2026-09-01',end:'2027-09-01',rent:5000000,deposit:5000000,active:true,note:''});
-const invoice=await create('invoices',{contractId:contract.id,period:'2026-09',due:'2026-09-20',rent:4000000,electricOld:100,electricNew:150,electricRate:3500,waterOld:10,waterNew:14,waterRate:20000,service:150000,paid:0,note:'internal'});
+const invoice=await create('invoices',{contractId:contract.id,period:'2026-09',due:'2026-09-20',rent:2000000,electricOld:100,electricNew:150,electricRate:3500,waterOld:10,waterNew:14,waterRate:20000,service:150000,paid:0,note:'internal'});
+const sharedInvoice=await create('invoices',{contractId:sharedContract.id,period:'2026-09',due:'2026-09-20',rent:2000000,electricOld:0,electricNew:0,electricRate:3500,waterOld:0,waterNew:0,waterRate:20000,service:0,paid:0,note:''});ok(sharedInvoice.data.contractId===sharedContract.id,'separate co-tenant invoice for same period');
 const inviteStaff=await request('team',{action:'invite',name:'Staff',phone:staff.user.phone,role:'staff',buildingIds:[house.id]},a);ok(inviteStaff.status===200,'owner invites staff');
 ok((await request('join',{token:inviteStaff.data.token},tenant)).status===400,'wrong phone cannot accept invite');
 ok((await request('join',{token:inviteStaff.data.token},staff)).status===200,'staff accepts');staff.workspace=a.workspace;
@@ -27,7 +30,7 @@ let view=(await request('records',null,staff)).data.records;ok(view.some(r=>r.id
 ok((await request('records',{kind:'rooms',id:room2.id,version:1,data:room2.data},staff)).status===404,'staff cannot edit other building');
 ok((await request('records',{kind:'rooms',id:room.id,version:1,data:{...room.data,buildingId:house2.id}},staff)).status===403,'staff cannot move room outside scope');
 ok((await request('records',{kind:'buildings',data:house.data},staff)).status===403,'staff cannot create building');
-ok((await request('records',{kind:'invoices',id:invoice.id,version:1,data:{...invoice.data,paid:4405000}},staff)).status===200,'staff records payment');
+ok((await request('records',{kind:'invoices',id:invoice.id,version:1,data:{...invoice.data,paid:1000000}},staff)).status===200,'staff records payment');
 ok((await request('records',{action:'delete',kind:'invoices',id:invoice.id,version:2},staff)).status===403,'staff cannot delete');
 ok((await request('team',null,staff)).status===403,'staff cannot read role admin');
 const inviteTenant=await request('team',{action:'invite',name:'Tenant A',phone:tenant.user.phone,role:'tenant',tenantId:person.id},a);ok(inviteTenant.status===200,'invite tenant');ok((await request('join',{token:inviteTenant.data.token},tenant)).status===200,'tenant accepts');tenant.workspace=a.workspace;
@@ -145,7 +148,7 @@ ok((await reportReq(a,'from=2026-09&to=2026-09&building='+house.id)).data.rooms=
 const {summarize}=await import('../work/qa-modules/reports-core.mjs');
 const fixture=[house,room,person,contract,{...invoice,data:{...invoice.data,paid:1000000}},{id:'report-expense',kind:'expenses',data:{buildingId:house.id,amount:200000,date:'2026-09-04',category:'Vận hành'}}];
 const summary=summarize(fixture,'2026-08','2026-09','all','2026-09-17');
-ok(summary.billed===4405000&&summary.paid===1000000&&summary.debt===3405000&&summary.cost===200000&&summary.balance===800000,'report financial totals');
+ok(summary.billed===2405000&&summary.paid===1000000&&summary.debt===1405000&&summary.cost===200000&&summary.balance===800000,'report financial totals');
 ok(summary.monthly[0].billed===0&&summary.monthly[1].paid===1000000,'zero month and invoice period grouping');
 ok(summary.occupied===1&&summary.debts[0].overdue===false,'occupancy and due date accurate');
 const future=summarize(fixture,'2026-09','2026-09','all','2026-08-01');ok(future.occupied===0,'future contracts do not occupy rooms');
@@ -185,7 +188,6 @@ const malformed=await handlers.auth.POST(new Request('https://rental.test/api/au
 sql.exec('DELETE FROM auth_limits');
 for(let i=0;i<13;i++){const r=await request('auth',{action:'login',phone:'0909999998',password:'wrong'});if(i===12)ok(r.status===429&&r.data.code==='AUTH_RATE_LIMITED','rate limit code');}
 console.log('PASS '+checks+' checks: registration/login/recovery/logout, workspace isolation, role scope, invitations, revocation, write validation, cookie sessions and hashed passwords.');
-
 
 
 
