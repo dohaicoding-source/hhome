@@ -3,7 +3,7 @@ import {mapsURL,resolveMaps} from '@/lib/maps';
 import {storage} from '@/lib/storage';
 import { canWrite } from '@/lib/permissions';
 import { z } from 'zod';
-import { invoiceTotal } from '@/lib/rental';
+import { contractTenantIds,invoiceTotal } from '@/lib/rental';
 const label=z.string().trim().min(1,'Vui lòng điền thông tin bắt buộc.').max(200);
 const note=z.string().max(2000).default(''); const amount=z.number().int().min(0).max(100000000000);
 const date=z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(s=>!isNaN(Date.parse(s))&&new Date(s).toISOString().slice(0,10)===s,'Ngày không hợp lệ');
@@ -21,7 +21,7 @@ const schemas={
  buildings:z.object({name:label,address:label,type:z.enum(['Căn hộ dịch vụ','Chung cư mini','Nhà trọ']),note,mapsUrl:z.string().trim().max(4096,'Liên kết bản đồ quá dài.').optional()}),
  rooms:z.object({name:label,buildingId:label,floor:z.number().int().min(0).max(200),area:z.number().min(1).max(10000),rent:amount,status:z.enum(['Sẵn sàng','Bảo trì']),note,equipment:equipmentSchema.optional()}),
  tenants:z.object({buildingId:z.string().optional(),name:label,phone:z.string().trim().regex(/^[+\d ()-]{8,20}$/,'Số điện thoại không hợp lệ'),email:z.union([z.literal(''),z.string().email()]),note,identity:identitySchema.optional(),vehicles:vehiclesSchema.optional()}),
- contracts:z.object({roomId:label,tenantId:label,start:date,end:date,rent:amount,deposit:amount,active:z.boolean(),note}).refine(d=>d.end>=d.start,'Ngày kết thúc phải sau ngày bắt đầu'),
+ contracts:z.object({roomId:label,tenantId:label.optional(),tenantIds:z.array(label).min(1,'Hợp đồng cần ít nhất một khách thuê.').max(50,'Mỗi hợp đồng tối đa 50 khách thuê.').optional(),start:date,end:date,rent:amount,deposit:amount,active:z.boolean(),note}).refine(d=>d.tenantIds?.length||d.tenantId,'Hợp đồng cần chọn khách thuê.').refine(d=>!d.tenantIds||new Set(d.tenantIds).size===d.tenantIds.length,'Khách thuê bị chọn trùng.').refine(d=>d.end>=d.start,'Ngày kết thúc phải sau ngày bắt đầu'),
  invoices:z.object({contractId:label,period:z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),due:date,rent:amount,electricOld:amount,electricNew:amount,electricRate:amount,waterOld:amount,waterNew:amount,waterRate:amount,service:amount,paid:amount,note}).refine(d=>d.electricNew>=d.electricOld&&d.waterNew>=d.waterOld,'Chỉ số mới phải lớn hơn hoặc bằng chỉ số cũ').refine(d=>d.paid<=invoiceTotal(d),'Số đã thu không được vượt tổng hóa đơn'),
  expenses:z.object({buildingId:label,name:label,amount:amount,date,category:z.enum(['Sửa chữa','Điện nước','Vận hành','Khác']),note})
 };
@@ -37,10 +37,12 @@ export async function POST(req:Request){
  if(body.id){old=await db.prepare('SELECT * FROM records WHERE id=? AND owner=? AND kind=?').bind(body.id,uid,kind).first<any>();if(!old||!visible.some(r=>r.id===body.id))return fail('Không tìm thấy dữ liệu trong phạm vi được giao.',404);if(old.version!==body.version)return fail('Dữ liệu đã thay đổi. Hãy tải lại trước khi sửa.',409);}
  if(body.action==='delete'){
  if(!old)return fail('Không tìm thấy dữ liệu.',404);
+ if(kind==='tenants'&&all.some(r=>r.kind==='contracts'&&contractTenantIds(r.data).includes(body.id||'')||r.kind==='invoices'&&Array.isArray(r.data.tenantIds)&&r.data.tenantIds.includes(body.id||'')))return fail('Không thể xóa khách thuê đang được tham chiếu trong hợp đồng hoặc hóa đơn.',409);
  const attachments=kind==='tenants'?(await db.prepare('SELECT object_key FROM tenant_images WHERE owner=? AND tenant_id=?').bind(uid,body.id).all<{object_key:string}>()).results:kind==='contracts'?(await db.prepare('SELECT object_key FROM contract_images WHERE owner=? AND contract_id=?').bind(uid,body.id).all<{object_key:string}>()).results:[];
  const result=await db.prepare('DELETE FROM records WHERE id=? AND owner=? AND version=? AND '+membershipGuard).bind(body.id,uid,body.version,...guardValues).run();if(!result.meta.changes)return fail('Dữ liệu đã thay đổi. Vui lòng tải lại.',409);if(attachments.length){try{await storage().delete(attachments.map(i=>i.object_key));}catch{console.error('Unable to remove unlinked contract images');}}return Response.json({ok:true});
  }
  const parsed=schemas[kind].safeParse(body.data);if(!parsed.success)return fail(parsed.error.issues[0].message);const d=parsed.data as any;
+ if(kind==='contracts'){d.tenantIds=Array.isArray(d.tenantIds)&&d.tenantIds.length?d.tenantIds:[d.tenantId];if(!d.tenantIds.length||!d.tenantIds[0])return fail('Hợp đồng cần chọn ít nhất một khách thuê.');d.tenantId=d.tenantIds[0];}
  if(kind==='tenants'){const previous=old?JSON.parse(old.data):{};if(d.identity===undefined)d.identity=previous.identity||{number:'',issueDate:'',issuePlace:'',permanentAddress:''};if(d.vehicles===undefined)d.vehicles=previous.vehicles||[];}
  if(kind==='buildings'){
  const previous=old?JSON.parse(old.data):{};
@@ -54,12 +56,12 @@ export async function POST(req:Request){
  if(member.role==='staff'){
   const scopes=new Set<string>(JSON.parse(member.building_ids));const has=(id:string,k:string)=>visible.some(r=>r.id===id&&r.kind===k);
   if((kind==='rooms'||kind==='expenses')&&!scopes.has(d.buildingId))return fail('Cơ sở nằm ngoài phạm vi được giao.',403);
-  if(kind==='contracts'&&(!has(d.roomId,'rooms')||!has(d.tenantId,'tenants')))return fail('Phòng hoặc khách thuê nằm ngoài phạm vi được giao.',403);
+  if(kind==='contracts'&&(!has(d.roomId,'rooms')||d.tenantIds.some((id:string)=>!has(id,'tenants'))))return fail('Phòng hoặc khách thuê nằm ngoài phạm vi được giao.',403);
   if(kind==='invoices'&&!has(d.contractId,'contracts'))return fail('Hợp đồng nằm ngoài phạm vi được giao.',403);
   if(kind==='tenants'){
    if(!old&&!scopes.has(d.buildingId))return fail('Hãy chọn cơ sở được giao cho khách thuê mới.',403);
    if(d.buildingId&&!scopes.has(d.buildingId))return fail('Cơ sở nằm ngoài phạm vi được giao.',403);
-   const related=all.filter(r=>r.kind==='contracts'&&r.data.tenantId===body.id);
+   const related=all.filter(r=>r.kind==='contracts'&&contractTenantIds(r.data).includes(body.id||''));
    if(related.some(c=>!has(c.id,'contracts')))return fail('Khách thuê có hợp đồng ở cơ sở khác. Hãy nhờ chủ nhà cập nhật.',403);
   }
  }
@@ -67,11 +69,11 @@ export async function POST(req:Request){
  async function related(id:string,k:string){const row=await db.prepare('SELECT data FROM records WHERE id=? AND owner=? AND kind=?').bind(id,uid,k).first<any>();if(!row)throw Error('RELATED');return JSON.parse(row.data);}
  if(kind==='tenants'&&d.buildingId){await related(d.buildingId,'buildings');parentId=d.buildingId;}
  if(kind==='rooms'){await related(d.buildingId,'buildings');parentId=d.buildingId;slot=d.buildingId+':'+d.name.toLowerCase();}
- if(kind==='contracts'){const room=await related(d.roomId,'rooms');await related(d.tenantId,'tenants');if(d.active&&room.status==='Bảo trì')return fail('Phòng đang bảo trì. Hãy chuyển sang sẵn sàng trước khi cho thuê.');parentId=d.roomId;tenantId=d.tenantId;slot=d.active?d.roomId+':'+d.tenantId:null;if(slot&&all.some(r=>r.kind==='contracts'&&r.id!==body.id&&r.data.roomId===d.roomId&&r.data.tenantId===d.tenantId&&r.data.active))return fail('Khách thuê này đã có hợp đồng đang hiệu lực cho phòng này.',409);}
- if(kind==='invoices'){await related(d.contractId,'contracts');parentId=d.contractId;slot=d.contractId+':'+d.period;}
+ if(kind==='contracts'){const room=await related(d.roomId,'rooms');for(const id of d.tenantIds)await related(id,'tenants');if(d.active&&room.status==='Bảo trì')return fail('Phòng đang bảo trì. Hãy chuyển sang sẵn sàng trước khi cho thuê.');parentId=d.roomId;tenantId=d.tenantIds[0];slot=d.active?d.roomId:null;if(slot&&all.some(r=>r.kind==='contracts'&&r.id!==body.id&&r.data.roomId===d.roomId&&r.data.active))return fail('Phòng đã có hợp đồng đang hiệu lực. Hãy thêm khách thuê vào hợp đồng hiện có.',409);}
+ if(kind==='invoices'){const contract=await related(d.contractId,'contracts');d.tenantIds=old?JSON.parse(old.data).tenantIds||contractTenantIds(contract):contractTenantIds(contract);parentId=d.contractId;slot=d.contractId+':'+d.period;if(all.some(r=>r.kind==='invoices'&&r.id!==body.id&&r.data.contractId===d.contractId&&r.data.period===d.period))return fail('Hợp đồng này đã có hóa đơn trong kỳ đã chọn.',409);}
  if(kind==='expenses'){await related(d.buildingId,'buildings');parentId=d.buildingId;}
  const savedId=body.id||crypto.randomUUID();
- if(old){const prev=JSON.parse(old.data);if(kind==='contracts'&&(prev.roomId!==d.roomId||prev.tenantId!==d.tenantId))return fail('Không thể đổi phòng/khách của hợp đồng đã tạo. Hãy kết thúc và tạo hợp đồng mới.');
+ if(old){const prev=JSON.parse(old.data);if(kind==='contracts'&&prev.roomId!==d.roomId)return fail('Không thể đổi phòng của hợp đồng đã tạo. Hãy kết thúc và tạo hợp đồng mới.');
  const result=await db.prepare('UPDATE records SET data=?,slot=?,parent_id=?,tenant_id=?,version=version+1 WHERE id=? AND owner=? AND version=? AND '+membershipGuard).bind(JSON.stringify(d),slot,parentId,tenantId,body.id,uid,body.version,...guardValues).run();if(!result.meta.changes)return fail('Dữ liệu đã thay đổi. Vui lòng tải lại.',409);
  }else{const result=await db.prepare('INSERT INTO records (id,owner,kind,data,slot,parent_id,tenant_id,version,created_at) SELECT ?,?,?,?,?,?,?,1,? WHERE '+membershipGuard).bind(savedId,uid,kind,JSON.stringify(d),slot,parentId,tenantId,new Date().toISOString(),...guardValues).run();if(!result.meta.changes)return fail('Quyền truy cập đã thay đổi. Hãy tải lại trang.',403);}
  return Response.json({ok:true,id:savedId,version:old?old.version+1:1});

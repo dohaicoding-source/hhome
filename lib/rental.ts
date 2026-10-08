@@ -1,6 +1,7 @@
 export type Kind = 'buildings'|'rooms'|'tenants'|'contracts'|'invoices'|'expenses';
 export type Row = {id:string; kind:Kind; data:Record<string,any>; version:number; createdAt:string};
 export const titles:Record<Kind,string>={buildings:'Cơ sở',rooms:'Phòng',tenants:'Khách thuê',contracts:'Hợp đồng',invoices:'Hóa đơn',expenses:'Chi phí'};
+export const contractTenantIds=(data:Record<string,any>):string[]=>Array.isArray(data.tenantIds)?data.tenantIds.filter((id:unknown):id is string=>typeof id==='string'):typeof data.tenantId==='string'?[data.tenantId]:[];
 export const money=(n:number)=>new Intl.NumberFormat('vi-VN',{style:'currency',currency:'VND',maximumFractionDigits:0}).format(n||0);
 export const today=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Ho_Chi_Minh'});
 export function invoiceTotal(d:Record<string,any>){return d.rent+(d.electricNew-d.electricOld)*d.electricRate+(d.waterNew-d.waterOld)*d.waterRate+d.service;}

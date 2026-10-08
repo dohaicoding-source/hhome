@@ -105,3 +105,7 @@ th{background:#f6f7f1;color:#728167;border-color:#e5eadc;font-size:12px;font-wei
 .date-picker-popover button:hover{background:#edf2e7}
 .date-picker-popover .rdp-selected button{background:#315d44;color:#fff}
 .numeric-input input:focus-visible,.date-input-control input:focus-visible{outline:0}
+.tenant-checkbox-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;padding:12px;border:1px solid #dce3ec;border-radius:7px;background:#fff}
+.tenant-checkbox-list label{display:flex;align-items:center;gap:8px;padding:7px;border-radius:5px;background:#f7f9fc;font-size:14px;font-weight:500}
+.tenant-checkbox-list input{width:16px;height:16px;margin:0;padding:0;accent-color:var(--primary)}
+.tenant-checkbox-list small{grid-column:1/-1;color:var(--muted);font-weight:400}

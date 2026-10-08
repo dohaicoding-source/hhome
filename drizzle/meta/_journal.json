@@ -36,6 +36,13 @@
       "when": 1791454800000,
       "tag": "0004_multi_tenant_contracts",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1791458100000,
+      "tag": "0005_shared_contract_tenants",
+      "breakpoints": true
     }
   ]
 }

@@ -1,13 +1,11 @@
 # Một phòng có nhiều khách thuê
 
-Mỗi khách thuê được quản lý bằng một hồ sơ và một hợp đồng riêng. Nhiều hợp đồng đang hiệu lực có thể cùng tham chiếu một phòng; mỗi cặp phòng–khách chỉ có tối đa một hợp đồng đang hiệu lực.
+Một phòng có một hợp đồng đang hiệu lực. Hợp đồng chứa danh sách tất cả khách ở chung; lập một hóa đơn theo hợp đồng cho mỗi kỳ. Khi chọn hợp đồng trên hóa đơn, giao diện hiển thị phòng và toàn bộ người thuê trong hợp đồng.
 
-## Tiền thuê và hóa đơn
+Số phòng của khách được suy ra từ hợp đồng đang hiệu lực và hiển thị trong danh sách/hồ sơ khách thuê. Không lưu số phòng lặp trong hồ sơ khách, tránh thông tin phòng lệch với hợp đồng. Mỗi hóa đơn lưu ảnh chụp danh sách người thuê tại thời điểm lập để lịch sử công nợ không đổi khi danh sách khách trong hợp đồng được cập nhật.
 
-- Tiền thuê lưu theo từng hợp đồng. Khi chọn phòng, biểu mẫu gợi ý phần tiền còn lại sau các hợp đồng đang hiệu lực; người quản lý có thể sửa theo thỏa thuận thực tế.
-- Hóa đơn tiếp tục gắn với hợp đồng, do đó mỗi khách có hóa đơn và công nợ riêng.
-- Điện, nước và phí dùng chung cần được phân bổ vào từng hóa đơn theo thỏa thuận. Hệ thống không tự chia các chỉ số công tơ chung.
+## Hợp đồng và hóa đơn cũ
 
-## Triển khai dữ liệu
+Migration `0005_shared_contract_tenants` thêm `tenantIds` từ `tenantId` hiện có, giữ lại hợp đồng và hóa đơn lịch sử. Nếu dữ liệu cũ có nhiều hợp đồng đang hiệu lực cùng phòng, migration không tự gộp hay thay đổi tiền/thời hạn. Hãy chuyển hợp đồng thừa sang “Đã kết thúc”, rồi cập nhật hợp đồng còn hiệu lực để chọn tất cả khách ở chung. Từ đó tạo hóa đơn chung cho hợp đồng. Các hóa đơn cũ vẫn gắn với hợp đồng lịch sử ban đầu.
 
-Slot của hợp đồng đang hiệu lực dùng `roomId:tenantId`; slot trống của hợp đồng đã kết thúc không thay đổi. Migration `drizzle-postgres/0001_multi_tenant_contracts.sql` chuyển các hợp đồng hiện có sang định dạng mới. Áp dụng migration bằng `npm.cmd run db:migrate` theo quy trình môi trường của dự án. Bản migration SQLite tương ứng nằm tại `drizzle/0004_multi_tenant_contracts.sql`.
+Migration PostgreSQL: `drizzle-postgres/0002_shared_contract_tenants.sql`. Migration SQLite/D1: `drizzle/0005_shared_contract_tenants.sql`.
